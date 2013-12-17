@@ -9,25 +9,25 @@
 package main
 
 import (
+	"bytes"
 	"encoding/csv"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"time"
-
-	"github.com/goulash/util"
 )
 
 const defaultTimesFile = "TIMES.csv"
 
-var which = map[string]func(string){
+var which = map[string]func(string) error{
 	"verify": Verify,
 	"status": Status,
 	"list":   List,
 	"total":  Total,
 	"begin":  Begin,
 	"end":    End,
+	"next":   Next,
 	"run":    Run,
 	"wait":   Wait,
 	"fork":   Fork,
@@ -46,7 +46,11 @@ func (e *FormatError) Error() string {
 	if e.JustIncomplete() {
 		return "last entry is incomplete"
 	} else {
-		return fmt.Sprint("contains invalid entries on line(s)", e.BadLines...)
+		if len(e.BadLines) == 1 {
+			return fmt.Sprint("incomplete or invalid entry on line ", e.BadLines[0])
+		} else {
+			return fmt.Sprint("incomplete or invalid entries on lines ", spokenList(e.BadLines))
+		}
 	}
 }
 
@@ -69,7 +73,7 @@ func main() {
 
 	err := command(path)
 	if err != nil {
-		fmt.Fprintf("Error: %s\n", err)
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 }
@@ -81,129 +85,175 @@ The default command is:
 	tracker status %s
 
 Commands available are:
-    verify  verify the validity of the times
     status  show the current status of the times
     list    list all the times
     total   print the sum of all the times
     begin   begin a new time entry
     end     complete the begun time entry
-	next	begin or end the entry depending on the contents
+    next    begin or end the entry depending on the contents
     run     begin a new time entry and complete upon termination
     wait    upon termination, complete the begun time entry
     fork    begin a new time entry and fork to terminate later
+    verify  verify the validity of the times
 `, defaultTimesFile)
 }
 
-func Verify(path string) error {}
+func Verify(path string) error { return nil }
 
-func Status(path string) error {}
+func Status(path string) error { return nil }
 
-func List(path string) error {}
+func List(path string) error { return nil }
 
-func Total(path string) error {}
+func Total(path string) error { return nil }
 
 func Begin(path string) error {
-	_, err := util.IsFileExists(path)
-	if err != nil {
-		return err
-	}
-
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_APPEND|os.O_CREATE, 0666)
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0666)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
 
-	if _, err = verify(f); err != nil {
-		return err
-	}
-	begin(f)
-	return nil
-}
-
-func begin(f *File) {
-	w := csv.NewWriter(f)
-	w.Write([]string{currentTime()})
-	w.Flush()
+	return beginEntry(f, true)
 }
 
 func Next(path string) error {
-	_, err := util.IsFileExists(path)
-	if err != nil {
-		return err
-	}
-
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_APPEND|os.O_CREATE, 0666)
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0666)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
 
-	if _, err = verify(f); err != nil {
+	_, err = readEntries(f, false)
+	f.Seek(0, 0)
+	if err != nil {
 		if ferr, ok := err.(*FormatError); ok {
-			if ferr.JustIncomplete() {
-				end(f) // then we complete it
-				return nil
+			if ferr.LastIsBad {
+				return endEntry(f, true)
+			} else if true { // TODO: force
+				return beginEntry(f, true)
 			}
 		}
 		return err
+	} else {
+		return beginEntry(f, true)
 	}
-	begin(f)
-	return nil
 }
 
-func End(path string) error {}
+func End(path string) error {
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0666)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
 
-func end(f *File) {
-	// TODO
-	w := csv.NewWriter(f)
+	return endEntry(f, true)
 }
 
 func Run(path string) error {
-	Begin(path)
-	Wait(path)
+	err := Begin(path)
+	if err != nil {
+		return err
+	}
+	return Wait(path)
 }
 
-func Wait(path string) error {}
+func Wait(path string) error { return nil }
 
-func Fork(path string) error {}
+func Fork(path string) error { return nil }
 
 // currentTime returns the current time as a string.
 func currentTime() string {
 	return time.Now().String()
 }
 
-// verify reads through all records from the Reader r, and returns a FormatError
-// if any of the entries are invalid or incomplete.
-func verify(r io.Reader) (count int, err error) {
-	v := csv.NewReader(r)
-	v.FieldsPerRecord = -1
+// readEntries reads all the entries from r and filters the bad ones out if
+// filter is true.
+//
+// If err is not nil, then it could be of the type *FormatError, or it could
+// also originate from csv, in which case just treat it as you would any other
+// unknown error.
+func readEntries(r io.Reader, filter bool) (entries [][]string, err error) {
+	reader := csv.NewReader(r)
+	reader.FieldsPerRecord = -1
+
+	entries, err = reader.ReadAll()
+	if err != nil {
+		return
+	}
 
 	var formatErr FormatError
-	for {
-		r, err := v.Read()
-		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			return err
-		}
-
-		count++
-		if len(r) == 2 {
+	for i, entry := range entries {
+		if len(entry) == 2 {
 			formatErr.LastIsBad = false
 		} else {
 			formatErr.LastIsBad = true
 			if formatErr.BadLines == nil {
 				formatErr.BadLines = make([]int, 0, 2)
 			}
-			append(formatErr.BadLines, count)
+			formatErr.BadLines = append(formatErr.BadLines, i+1)
 		}
 	}
-
 	if formatErr.BadLines != nil {
-		return &formatErr
+		err = &formatErr
 	}
 
+	return
+}
+
+func beginEntry(rw io.ReadWriter, force bool) error {
+	_, err := readEntries(rw, false)
+	if err != nil {
+		if _, ok := err.(*FormatError); !(force || ok) {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "Warning: %v\n", err)
+	}
+
+	writer := csv.NewWriter(rw)
+	writer.Write([]string{currentTime()})
+	writer.Flush()
+	fmt.Println("BEGIN")
 	return nil
+}
+
+func endEntry(rw io.ReadWriteSeeker, force bool) error {
+	entries, err := readEntries(rw, false)
+	if err != nil {
+		if ferr, ok := err.(*FormatError); ok && ferr.LastIsBad {
+			if len(ferr.BadLines) > 1 {
+				if !force {
+					return err
+				}
+				fmt.Fprintf(os.Stderr, "Warning: %v\n", err)
+			}
+
+			last := append(entries[len(entries)-1], currentTime())
+			rw.Seek(-int64(len(last[0])+1), 2) // rewind the last transaction
+			writer := csv.NewWriter(rw)
+			writer.Write(last)
+			writer.Flush()
+			fmt.Println("END")
+			return nil
+		}
+		return err
+	} else {
+		return errors.New("no incomplete entry to end")
+	}
+}
+
+func spokenList(list []int) string {
+	var b bytes.Buffer
+	for i, n := 0, len(list); i < n; i++ {
+		b.WriteString(fmt.Sprint(list[i]))
+		if i < n-2 {
+			b.WriteString(", ")
+		} else if i < n-1 {
+			if n == 2 {
+				b.WriteString(" and ")
+			} else {
+				b.WriteString(", and ")
+			}
+		}
+	}
+	return b.String()
 }
