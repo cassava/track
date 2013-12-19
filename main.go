@@ -15,6 +15,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
+	"os/signal"
 	"time"
 )
 
@@ -32,6 +34,10 @@ var which = map[string]func(string) error{
 	"wait":   Wait,
 	"fork":   Fork,
 }
+
+var (
+	verbose bool = true
+)
 
 type FormatError struct {
 	BadLines  []int
@@ -157,9 +163,37 @@ func Run(path string) error {
 	return Wait(path)
 }
 
-func Wait(path string) error { return nil }
+// Wait blocks until it receives a signal from the operating system, at which
+// it completes the entry in path and exits. If the signal is the Kill signal,
+// i.e. SIGKILL, then we exit right away.
+func Wait(path string) error {
+	c := make(chan os.Signal, 1)
+	signal.Notify(c)
+	inform("WAIT")
+	sig := <-c
+	if sig == os.Kill {
+		os.Exit(1)
+	}
+	return End(path)
+}
 
-func Fork(path string) error { return nil }
+func Fork(path string) error {
+	err := Begin(path)
+	if err != nil {
+		return err
+	}
+
+	inform("FORK")
+	cmd := exec.Command(os.Args[0], "wait", path)
+	return cmd.Start()
+}
+
+// inform prints str if the global var verbose is true.
+func inform(str string) {
+	if verbose {
+		fmt.Println(str)
+	}
+}
 
 // currentTime returns the current time as a string.
 func currentTime() string {
@@ -212,7 +246,7 @@ func beginEntry(rw io.ReadWriter, force bool) error {
 	writer := csv.NewWriter(rw)
 	writer.Write([]string{currentTime()})
 	writer.Flush()
-	fmt.Println("BEGIN")
+	inform("BEGIN")
 	return nil
 }
 
@@ -232,7 +266,7 @@ func endEntry(rw io.ReadWriteSeeker, force bool) error {
 			writer := csv.NewWriter(rw)
 			writer.Write(last)
 			writer.Flush()
-			fmt.Println("END")
+			inform("END")
 			return nil
 		}
 		return err
@@ -241,6 +275,7 @@ func endEntry(rw io.ReadWriteSeeker, force bool) error {
 	}
 }
 
+// spokenList returns the list as a string as it would be written in English.
 func spokenList(list []int) string {
 	var b bytes.Buffer
 	for i, n := 0, len(list); i < n; i++ {
