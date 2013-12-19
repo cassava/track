@@ -85,12 +85,12 @@ func main() {
 	n := flag.NArg()
 	if n > 0 {
 		command = which[args[0]]
-		if command == nil || n > 3 {
+		if command == nil || n > 2 {
 			Help()
 			os.Exit(2)
 		}
 
-		if n == 3 {
+		if n == 2 {
 			pathArg = args[1]
 		}
 	}
@@ -160,8 +160,13 @@ func Total() error {
 
 	var sum time.Duration
 	for _, entry := range entries {
-		sum += duration(entry[0], entry[1])
+		dur, err := duration(entry[0], entry[1])
+		if err != nil {
+			return err
+		}
+		sum += dur
 	}
+	fmt.Println(sum)
 
 	return nil
 }
@@ -207,10 +212,6 @@ func End() error {
 	defer f.Close()
 
 	return endEntry(f, true)
-}
-
-func Clean() error {
-	return nil
 }
 
 func Run() error {
@@ -365,8 +366,15 @@ func spokenList(list []int) string {
 }
 
 // duration returns the interpretated duration between two times.
-func duration(a, b string) time.Duration {
-	atime, _ := time.Parse(timeFormat, a)
-	btime, _ := time.Parse(timeFormat, b)
-	return atime.Sub(btime)
+func duration(from, to string) (dur time.Duration, err error) {
+	begin, err := time.Parse(timeFormat, from)
+	if err != nil {
+		return
+	}
+	end, err := time.Parse(timeFormat, to)
+	if err != nil {
+		return
+	}
+	dur = end.Sub(begin)
+	return
 }
