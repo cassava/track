@@ -12,31 +12,13 @@ import (
 	"bytes"
 	"encoding/csv"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"os/signal"
 	"time"
-)
-
-const defaultTimesFile = "TIMES.csv"
-
-var which = map[string]func(string) error{
-	"verify": Verify,
-	"status": Status,
-	"list":   List,
-	"total":  Total,
-	"begin":  Begin,
-	"end":    End,
-	"next":   Next,
-	"run":    Run,
-	"wait":   Wait,
-	"fork":   Fork,
-}
-
-var (
-	verbose bool = true
 )
 
 type FormatError struct {
@@ -60,24 +42,59 @@ func (e *FormatError) Error() string {
 	}
 }
 
+var which = map[string]func() error{
+	"begin":  Begin,
+	"clean":  Clean,
+	"end":    End,
+	"fork":   Fork,
+	"list":   List,
+	"next":   Next,
+	"run":    Run,
+	"status": Status,
+	"total":  Total,
+	"verify": Verify,
+	"wait":   Wait,
+}
+
+// Configuration variables which are read from the command line.
+var (
+	helpFlag  = false
+	quietFlag = false
+	failFlag  = false
+	pathArg   = "TIMES.csv"
+)
+
+func init() {
+	flag.Usage = Help
+	flag.BoolVar(&failFlag, "fail", failFlag, "fail if there is any error in the times file")
+	flag.BoolVar(&helpFlag, "help", helpFlag, "print this usage text for track")
+	flag.BoolVar(&quietFlag, "quiet", quietFlag, "do not print informative messages")
+}
+
 func main() {
-	var path = defaultTimesFile
 	var command = Status
 
-	n := len(os.Args)
-	if n > 1 {
-		command = which[os.Args[1]]
+	flag.Parse()
+	if helpFlag {
+		Help()
+		return
+	}
+
+	args := flag.Args()
+	n := flag.NArg()
+	if n > 0 {
+		command = which[args[0]]
 		if command == nil || n > 3 {
 			Help()
-			return
+			os.Exit(2)
 		}
 
 		if n == 3 {
-			path = os.Args[2]
+			pathArg = args[1]
 		}
 	}
 
-	err := command(path)
+	err := command()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
@@ -85,45 +102,63 @@ func main() {
 }
 
 func Help() {
-	fmt.Printf(`Usage: tracker [command [file]]
+	fmt.Println(`Usage: track [command [file]]
 
 The default command is:
-	tracker status %s
+	track status TIMES.csv
 
 Commands available are:
-    status  show the current status of the times
-    list    list all the times
-    total   print the sum of all the times
     begin   begin a new time entry
+    clean   clean out all the invalid time entries
     end     complete the begun time entry
+    fork    begin a new time entry and fork to terminate later
+    list    list all the times
     next    begin or end the entry depending on the contents
     run     begin a new time entry and complete upon termination
-    wait    upon termination, complete the begun time entry
-    fork    begin a new time entry and fork to terminate later
+    status  show the current status of the times
+    total   print the sum of all the times
     verify  verify the validity of the times
-`, defaultTimesFile)
+    wait    upon termination, complete the begun time entry
+
+Options available are:
+   -fail	fail if there are any invalid time entries
+   -help	print this usage text for track
+   -quiet	do not print any informative messages
+`)
 }
 
-func Verify(path string) error { return nil }
+func Verify() error {
+	return nil
+}
 
-func Status(path string) error { return nil }
+func Clean() error {
+	return nil
+}
 
-func List(path string) error { return nil }
+func Status() error {
+	return nil
+}
 
-func Total(path string) error { return nil }
+func List() error {
+	return nil
+}
 
-func Begin(path string) error {
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0666)
+func Total() error {
+	return nil
+}
+
+func Begin() error {
+	f, err := os.OpenFile(pathArg, os.O_RDWR|os.O_CREATE, 0666)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
 
-	return beginEntry(f, true)
+	return beginEntry(f, failFlag)
 }
 
-func Next(path string) error {
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0666)
+func Next() error {
+	f, err := os.OpenFile(pathArg, os.O_RDWR|os.O_CREATE, 0666)
 	if err != nil {
 		return err
 	}
@@ -134,19 +169,19 @@ func Next(path string) error {
 	if err != nil {
 		if ferr, ok := err.(*FormatError); ok {
 			if ferr.LastIsBad {
-				return endEntry(f, true)
-			} else if true { // TODO: force
-				return beginEntry(f, true)
+				return endEntry(f, failFlag)
+			} else if !failFlag {
+				return beginEntry(f, failFlag)
 			}
 		}
 		return err
 	} else {
-		return beginEntry(f, true)
+		return beginEntry(f, failFlag)
 	}
 }
 
-func End(path string) error {
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0666)
+func End() error {
+	f, err := os.OpenFile(pathArg, os.O_RDWR|os.O_CREATE, 0666)
 	if err != nil {
 		return err
 	}
@@ -155,18 +190,18 @@ func End(path string) error {
 	return endEntry(f, true)
 }
 
-func Run(path string) error {
-	err := Begin(path)
+func Run() error {
+	err := Begin()
 	if err != nil {
 		return err
 	}
-	return Wait(path)
+	return Wait()
 }
 
 // Wait blocks until it receives a signal from the operating system, at which
 // it completes the entry in path and exits. If the signal is the Kill signal,
 // i.e. SIGKILL, then we exit right away.
-func Wait(path string) error {
+func Wait() error {
 	c := make(chan os.Signal, 1)
 	signal.Notify(c)
 	inform("WAIT")
@@ -174,23 +209,23 @@ func Wait(path string) error {
 	if sig == os.Kill {
 		os.Exit(1)
 	}
-	return End(path)
+	return End()
 }
 
-func Fork(path string) error {
-	err := Begin(path)
+func Fork() error {
+	err := Begin()
 	if err != nil {
 		return err
 	}
 
 	inform("FORK")
-	cmd := exec.Command(os.Args[0], "wait", path)
+	cmd := exec.Command(os.Args[0], "wait", pathArg)
 	return cmd.Start()
 }
 
 // inform prints str if the global var verbose is true.
 func inform(str string) {
-	if verbose {
+	if !quietFlag {
 		fmt.Println(str)
 	}
 }
@@ -234,10 +269,10 @@ func readEntries(r io.Reader, filter bool) (entries [][]string, err error) {
 	return
 }
 
-func beginEntry(rw io.ReadWriter, force bool) error {
+func beginEntry(rw io.ReadWriter, fail bool) error {
 	_, err := readEntries(rw, false)
 	if err != nil {
-		if _, ok := err.(*FormatError); !(force || ok) {
+		if _, ok := err.(*FormatError); fail || !ok {
 			return err
 		}
 		fmt.Fprintf(os.Stderr, "Warning: %v\n", err)
@@ -250,12 +285,12 @@ func beginEntry(rw io.ReadWriter, force bool) error {
 	return nil
 }
 
-func endEntry(rw io.ReadWriteSeeker, force bool) error {
+func endEntry(rw io.ReadWriteSeeker, fail bool) error {
 	entries, err := readEntries(rw, false)
 	if err != nil {
 		if ferr, ok := err.(*FormatError); ok && ferr.LastIsBad {
 			if len(ferr.BadLines) > 1 {
-				if !force {
+				if fail {
 					return err
 				}
 				fmt.Fprintf(os.Stderr, "Warning: %v\n", err)
