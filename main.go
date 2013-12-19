@@ -44,7 +44,6 @@ func (e *FormatError) Error() string {
 
 var which = map[string]func() error{
 	"begin":  Begin,
-	"clean":  Clean,
 	"end":    End,
 	"fork":   Fork,
 	"list":   List,
@@ -55,6 +54,8 @@ var which = map[string]func() error{
 	"verify": Verify,
 	"wait":   Wait,
 }
+
+const timeFormat = "2006-01-02 15:04:05 MST"
 
 // Configuration variables which are read from the command line.
 var (
@@ -109,7 +110,6 @@ The default command is:
 
 Commands available are:
     begin   begin a new time entry
-    clean   clean out all the invalid time entries
     end     complete the begun time entry
     fork    begin a new time entry and fork to terminate later
     list    list all the times
@@ -131,10 +131,6 @@ func Verify() error {
 	return nil
 }
 
-func Clean() error {
-	return nil
-}
-
 func Status() error {
 	return nil
 }
@@ -144,6 +140,29 @@ func List() error {
 }
 
 func Total() error {
+	f, err := os.Open(pathArg)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	entries, err := readEntries(f, true)
+	if err != nil {
+		if ferr, ok := err.(*FormatError); ok {
+			if !ferr.JustIncomplete() && failFlag {
+				return err
+			}
+			fmt.Fprintf(os.Stderr, "Warning: %s\n", ferr)
+		} else {
+			return err
+		}
+	}
+
+	var sum time.Duration
+	for _, entry := range entries {
+		sum += duration(entry[0], entry[1])
+	}
+
 	return nil
 }
 
@@ -190,6 +209,10 @@ func End() error {
 	return endEntry(f, true)
 }
 
+func Clean() error {
+	return nil
+}
+
 func Run() error {
 	err := Begin()
 	if err != nil {
@@ -232,7 +255,7 @@ func inform(str string) {
 
 // currentTime returns the current time as a string.
 func currentTime() string {
-	return time.Now().String()
+	return time.Now().Format(timeFormat)
 }
 
 // readEntries reads all the entries from r and filters the bad ones out if
@@ -264,6 +287,19 @@ func readEntries(r io.Reader, filter bool) (entries [][]string, err error) {
 	}
 	if formatErr.BadLines != nil {
 		err = &formatErr
+
+		if filter {
+			n := len(entries) - len(formatErr.BadLines)
+			filtered := make([][]string, n)
+			var i int
+			for _, entry := range entries {
+				if len(entry) == 2 {
+					filtered[i] = entry
+					i++
+				}
+			}
+			entries = filtered
+		}
 	}
 
 	return
@@ -326,4 +362,11 @@ func spokenList(list []int) string {
 		}
 	}
 	return b.String()
+}
+
+// duration returns the interpretated duration between two times.
+func duration(a, b string) time.Duration {
+	atime, _ := time.Parse(timeFormat, a)
+	btime, _ := time.Parse(timeFormat, b)
+	return atime.Sub(btime)
 }
